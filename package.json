@@ -1,5 +1,5 @@
 {
-  "name": "gb2pdf",
+  "name": "Gitbook2PDF",
   "module": "index.ts",
   "type": "module",
   "devDependencies": {

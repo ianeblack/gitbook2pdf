@@ -2,7 +2,7 @@
   "lockfileVersion": 1,
   "workspaces": {
     "": {
-      "name": "gb2pdf",
+      "name": "Gitbook2PDF",
       "dependencies": {
         "@types/xml2js": "^0.4.14",
         "axios": "^1.9.0",

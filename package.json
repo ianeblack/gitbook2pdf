@@ -2,6 +2,11 @@
   "name": "Gitbook2PDF",
   "module": "index.ts",
   "type": "module",
+  "scripts": {
+    "pdf": "bun run index.ts",
+    "start": "bun run index.ts",
+    "dev": "bun --watch index.ts"
+  },
   "devDependencies": {
     "@types/bun": "latest"
   },

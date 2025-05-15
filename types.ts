@@ -12,6 +12,7 @@ export interface Config {
     includePatterns: string[];
     excludePatterns: string[];
     timeout: number;
+    merge: boolean;
 }
 
 export interface SitemapUrl {
@@ -46,4 +47,10 @@ export interface ProcessingStats {
     skipped: number;
     totalSize: number;
     totalDuration: number;
+}
+
+export interface PageContent {
+    url: string;
+    html: string;
+    title: string;
 }

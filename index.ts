@@ -8,7 +8,7 @@ import chalk from "chalk";
 import ora from "ora";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
-import type { Config, ParsedSitemap, ProcessingResult, ProcessingStats, SitemapUrl } from "./types";
+import type { Config, PageContent, ParsedSitemap, ProcessingResult, ProcessingStats, SitemapUrl } from "./types";
 
 
 
@@ -25,6 +25,7 @@ class GitBookToPDFConverter {
     };
     private progressFile: string;
     private processedUrls = new Set<string>();
+    private pageContents: PageContent[] = []; // For merge functionality
 
     constructor(config: Config) {
         this.config = config;
@@ -186,12 +187,93 @@ class GitBookToPDFConverter {
         });
     }
 
+    // Enhanced content extraction for merge functionality
+    private async extractPageContent(url: string): Promise<PageContent | null> {
+        let page: Page | null = null;
+
+        try {
+            page = await this.createPage();
+
+            // Set viewport for consistent rendering
+            await page.setViewport({ width: 1280, height: 1024 });
+
+            // Navigate with enhanced wait conditions
+            await page.goto(url, {
+                waitUntil: ['networkidle2', 'domcontentloaded'],
+                timeout: this.config.timeout,
+            });
+
+            // Wait for content to load
+            await this.waitForContent(page, url);
+
+            // Hide unwanted elements if configured
+            if (this.config.hideElements) {
+                await this.hideNavigationElements(page);
+            }
+
+            // Extract content and title
+            const { html, title } = await page.evaluate(() => {
+                // Get main content area
+                const contentSelectors = [
+                    'main',
+                    'article',
+                    '[data-testid="content"]',
+                    '.gitbook-content',
+                    '.page-content',
+                    '.page-inner'
+                ];
+
+                let contentElement = null;
+                for (const selector of contentSelectors) {
+                    contentElement = document.querySelector(selector);
+                    if (contentElement) break;
+                }
+
+                const html = contentElement ? contentElement.outerHTML : document.body.innerHTML;
+                const title = document.title || document.querySelector('h1')?.textContent || 'Untitled';
+
+                return { html, title };
+            });
+
+            return { url, html, title };
+
+        } catch (error: any) {
+            console.error(chalk.red(`Failed to extract content from ${url}: ${error.message}`));
+            return null;
+        } finally {
+            if (page) {
+                await page.close();
+            }
+        }
+    }
+
     // Enhanced PDF generation with better error handling
     private async convertToPDF(url: string, outputPath: string): Promise<ProcessingResult> {
         const startTime = Date.now();
         let page: Page | null = null;
 
         try {
+            // If merge is enabled, extract content instead of generating individual PDF
+            if (this.config.merge) {
+                const content = await this.extractPageContent(url);
+                if (content) {
+                    this.pageContents.push(content);
+                    return {
+                        url,
+                        success: true,
+                        outputPath: 'merged', // Placeholder
+                        duration: Date.now() - startTime
+                    };
+                } else {
+                    return {
+                        url,
+                        success: false,
+                        error: 'Failed to extract content',
+                        duration: Date.now() - startTime
+                    };
+                }
+            }
+
             page = await this.createPage();
 
             // Set viewport for consistent rendering
@@ -251,6 +333,114 @@ class GitBookToPDFConverter {
                 await page.close();
             }
         }
+    }
+
+    // Generate merged PDF from collected content
+    private async generateMergedPDF(): Promise<void> {
+        if (this.pageContents.length === 0) {
+            console.warn(chalk.yellow('No content to merge'));
+            return;
+        }
+
+        const spinner = ora('Generating merged PDF...').start();
+        let page: Page | null = null;
+
+        try {
+            page = await this.createPage();
+
+            // Create merged HTML content
+            const mergedHTML = this.createMergedHTML(this.pageContents);
+
+            // Set content
+            await page.setContent(mergedHTML, { waitUntil: 'networkidle2' });
+
+            // Apply CSS for print
+            await page.addStyleTag({
+                content: `
+                    @page { 
+                        margin: 0.5cm; 
+                    }
+                    .page-break { 
+                        page-break-before: always; 
+                    }
+                    body { 
+                        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', sans-serif;
+                        font-size: 14px;
+                        line-height: 1.6;
+                    }
+                    h1, h2, h3, h4, h5, h6 {
+                        color: #333;
+                        margin-top: 1.5em;
+                        margin-bottom: 0.5em;
+                    }
+                    .page-title {
+                        font-size: 24px;
+                        font-weight: bold;
+                        color: #2c3e50;
+                        margin-bottom: 1em;
+                        border-bottom: 2px solid #3498db;
+                        padding-bottom: 0.5em;
+                    }
+                    .page-url {
+                        font-size: 12px;
+                        color: #7f8c8d;
+                        margin-bottom: 1em;
+                    }
+                `
+            });
+
+            // Generate PDF
+            const outputPath = path.join(this.config.outputDir, 'merged-gitbook.pdf');
+            const pdfOptions = this.getPDFOptions(outputPath);
+
+            await page.pdf({
+                ...pdfOptions,
+                displayHeaderFooter: true,
+                headerTemplate: '<div style="font-size:10px; margin: auto;">GitBook Documentation</div>',
+                footerTemplate: '<div style="font-size:10px; margin: auto;"><span class="pageNumber"></span> / <span class="totalPages"></span></div>',
+            });
+
+            // Get file size for stats
+            const stats = await fs.stat(outputPath);
+            this.stats.totalSize = stats.size;
+
+            spinner.succeed(`Merged PDF created: ${outputPath}`);
+            console.log(chalk.green(`📁 Merged PDF Size: ${this.formatBytes(stats.size)}`));
+
+        } catch (error: any) {
+            spinner.fail(`Failed to generate merged PDF: ${error.message}`);
+            throw error;
+        } finally {
+            if (page) {
+                await page.close();
+            }
+        }
+    }
+
+    // Create merged HTML content
+    private createMergedHTML(contents: PageContent[]): string {
+        const pages = contents.map((content, index) => `
+            <div class="${index > 0 ? 'page-break' : ''}">
+                <div class="page-title">${content.title}</div>
+                <div class="page-url">${content.url}</div>
+                <div class="page-content">
+                    ${content.html}
+                </div>
+            </div>
+        `).join('\n');
+
+        return `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <meta charset="UTF-8">
+                <title>GitBook Documentation</title>
+            </head>
+            <body>
+                ${pages}
+            </body>
+            </html>
+        `;
     }
 
     private async waitForContent(page: Page, url: string): Promise<void> {
@@ -396,7 +586,7 @@ class GitBookToPDFConverter {
     // Main processing function with parallel execution
     async process(): Promise<void> {
         console.log(chalk.blue('🚀 GitBook to PDF Converter Started'));
-        console.log(chalk.gray(`Configuration: ${JSON.stringify(this.config, null, 2)}`));
+        console.log(chalk.gray(`Configuration: ${JSON.stringify({ ...this.config, url: '...' }, null, 2)}`));
 
         try {
             // Create output directory
@@ -419,6 +609,10 @@ class GitBookToPDFConverter {
 
             console.log(chalk.green(`Found ${allUrls.length} total URLs, processing ${urlsToProcess.length} URLs`));
 
+            if (this.config.merge) {
+                console.log(chalk.blue('📄 Merge mode enabled - will create single merged PDF'));
+            }
+
             // Set up concurrency limiter
             const limit = pLimit(this.config.concurrency);
             this.stats.total = urlsToProcess.length;
@@ -429,15 +623,19 @@ class GitBookToPDFConverter {
             // Process URLs in parallel with controlled concurrency
             const promises = urlsToProcess.map((url, index) =>
                 limit(async () => {
-                    // Create file path
-                    const category = this.getCategory(url);
-                    const categoryDir = path.join(this.config.outputDir, category);
-                    await fs.mkdir(categoryDir, { recursive: true });
+                    let outputPath = '';
 
-                    const fileName = this.createFileName(url, index + this.processedUrls.size + 1);
-                    const outputPath = path.join(categoryDir, fileName);
+                    // Create file path only if not merging
+                    if (!this.config.merge) {
+                        const category = this.getCategory(url);
+                        const categoryDir = path.join(this.config.outputDir, category);
+                        await fs.mkdir(categoryDir, { recursive: true });
 
-                    // Convert to PDF
+                        const fileName = this.createFileName(url, index + this.processedUrls.size + 1);
+                        outputPath = path.join(categoryDir, fileName);
+                    }
+
+                    // Convert to PDF (or extract content for merge)
                     const result = await this.convertToPDF(url, outputPath);
 
                     // Update stats
@@ -473,6 +671,11 @@ class GitBookToPDFConverter {
             await Promise.all(promises);
             progressBar.succeed(`Completed processing ${urlsToProcess.length} URLs`);
 
+            // Generate merged PDF if enabled
+            if (this.config.merge) {
+                await this.generateMergedPDF();
+            }
+
             // Final progress save
             await this.saveProgress();
 
@@ -494,6 +697,10 @@ class GitBookToPDFConverter {
         console.log(chalk.cyan(`📁 Total Size: ${this.formatBytes(this.stats.totalSize)}`));
         console.log(chalk.cyan(`⏱️  Total Duration: ${this.formatDuration(this.stats.totalDuration)}`));
         console.log(chalk.gray(`📂 Output Directory: ${path.resolve(this.config.outputDir)}`));
+
+        if (this.config.merge) {
+            console.log(chalk.blue(`📄 Merged PDF: ${path.join(this.config.outputDir, 'merged-gitbook.pdf')}`));
+        }
 
         if (this.stats.successful > 0) {
             const avgSize = this.stats.totalSize / this.stats.successful;
@@ -598,6 +805,11 @@ async function setupCLI(): Promise<Config> {
             default: 30000,
             description: 'Request timeout (ms)',
         })
+        .option('merge', {
+            type: 'boolean',
+            default: false,
+            description: 'Merge all pages into a single PDF',
+        })
         .help()
         .argv;
 
@@ -636,6 +848,7 @@ async function setupCLI(): Promise<Config> {
         includePatterns: argv.include as string[],
         excludePatterns: argv.exclude as string[],
         timeout: argv.timeout,
+        merge: argv.merge,
     };
 }
 

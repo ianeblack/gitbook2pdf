@@ -7,7 +7,7 @@
 
 # 📚➡️📄 gb2pdf
 
-> High-performance GitBook to PDF converter with parallel processing, resume capability, and smart filtering! ⚡
+> High-performance GitBook to PDF converter with parallel processing, resume capability, merge option, and smart filtering! ⚡
 ## ⚡ Quick Start
 
 ### Install 📥
@@ -24,12 +24,16 @@ bun pdf
 
 # Direct conversion
 bun pdf --url https://your-gitbook.io
+
+# Generate single merged PDF
+bun pdf --url https://your-gitbook.io --merge
 ```
 
 ## 🚀 Features
 
 - **⚡ Lightning Fast**: Parallel processing with configurable concurrency
 - **🔄 Resume Support**: Continue interrupted conversions
+- **📄 Merge Option**: Combine all pages into single PDF
 - **🎯 Smart Filtering**: Include/exclude patterns with regex support
 - **📊 Progress Tracking**: Real-time progress with detailed statistics
 - **🎨 Quality Options**: Multiple quality presets (low/medium/high)
@@ -71,6 +75,9 @@ bun pdf \
 # Resume previous conversion
 bun pdf --url https://docs.example.com --resume
 
+# Generate merged PDF
+bun pdf --url https://docs.example.com --merge --quality high
+
 # Selective conversion with filters
 bun pdf \
   --url https://docs.example.com \
@@ -104,10 +111,12 @@ bun pdf \
 | `--include` | - | `[]` | Include URL patterns (regex) |
 | `--exclude` | - | `[]` | Exclude URL patterns (regex) |
 | `--timeout` | - | `30000` | Request timeout (ms) |
+| `--merge` | - | `false` | Merge all pages into single PDF |
 | `--help` | `-h` | - | Show help message |
 
 ## 📂 Output Structure
 
+### Individual PDFs
 ```
 pdfs/
 ├── 📁 getting-started/
@@ -119,6 +128,13 @@ pdfs/
 │   └── 005_examples.pdf
 ├── 📁 guides/
 │   └── 006_advanced-usage.pdf
+└── .progress.json          # Resume data
+```
+
+### Merged PDF
+```
+pdfs/
+├── merged-gitbook.pdf      # Single merged PDF
 └── .progress.json          # Resume data
 ```
 
@@ -134,6 +150,12 @@ bun pdf --url https://docs.company.com --concurrency 8 --quality high
 ```bash
 # Convert only API docs
 bun pdf --url https://docs.api.com --include ".*/api/.*" --format A3
+```
+
+### Merged Documentation
+```bash
+# Create single PDF for easy sharing
+bun pdf --url https://company-docs.com --merge --quality high
 ```
 
 ### Offline Reading
@@ -161,6 +183,7 @@ bun pdf --url $DOCS_URL --output ./dist/pdfs --no-hide-elements
 2. **Use low quality** for drafts: `--quality low`
 3. **Filter unnecessary pages** with `--exclude`
 4. **Enable resume** for large sites: `--resume`
+5. **Use merge** for single document: `--merge`
 
 ## 🔍 Filtering Examples
 

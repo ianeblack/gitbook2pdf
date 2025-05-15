@@ -1,3 +1,4 @@
 node_modules
 pdfs/wunder
 pdfs
+.DS_Store

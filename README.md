@@ -75,10 +75,9 @@ While the conversion is running, you can use these keyboard shortcuts:
 bun pdf
 
 # Direct URL conversion
-bun pdf --url https://docs.example.com
-
+bun pdf --url https://careers.gitbook.com/
 # Specify output directory
-bun pdf -u https://docs.example.com -o ./my-pdfs
+bun pdf -u https://careers.gitbook.com/ -o ./my-pdfs
 ```
 
 ### Advanced Options
@@ -86,27 +85,27 @@ bun pdf -u https://docs.example.com -o ./my-pdfs
 ```bash
 # High-performance conversion
 bun pdf \
-  --url https://docs.example.com \
+  --url https://careers.gitbook.com/ \
   --concurrency 8 \
   --quality high \
   --format A3
 
 # Resume previous conversion
-bun pdf --url https://docs.example.com --resume
+bun pdf --url https://careers.gitbook.com/ --resume
 
 # Generate merged PDF
-bun pdf --url https://docs.example.com --merge --quality high
+bun pdf --url https://careers.gitbook.com --merge --quality high
 
 # Selective conversion with filters
 bun pdf \
-  --url https://docs.example.com \
+  --url https://careers.gitbook.com \
   --include ".*/api/.*" \
   --exclude ".*/internal/.*" \
   --exclude ".*/deprecated/.*"
 
 # Custom configuration
 bun pdf \
-  --url https://docs.example.com \
+  --url https://github.com/tsoodo/gitbook2pdf \
   --concurrency 6 \
   --delay 500 \
   --retries 5 \
@@ -162,25 +161,25 @@ pdfs/
 ### Documentation Teams
 ```bash
 # Convert entire documentation site
-bun pdf --url https://docs.company.com --concurrency 8 --quality high
+bun pdf --url https://careers.gitbook.com --concurrency 8 --quality high
 ```
 
 ### API Documentation
 ```bash
 # Convert only API docs
-bun pdf --url https://docs.api.com --include ".*/api/.*" --format A3
+bun pdf --url https://docs.snyk.io/snyk-api --include ".*/snyk-api/.*" --format A3
 ```
 
 ### Merged Documentation
 ```bash
 # Create single PDF for easy sharing
-bun pdf --url https://company-docs.com --merge --quality high
+bun pdf --url https://docs.zenml.io/ --merge --quality high
 ```
 
 ### Offline Reading
 ```bash
 # Quick conversion for offline reading
-bun pdf --url https://guide.framework.com --quality medium
+bun pdf --url https://developer.thunderbird.net/ --quality medium
 ```
 
 ### CI/CD Integration

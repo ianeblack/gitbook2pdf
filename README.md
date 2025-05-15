@@ -12,8 +12,8 @@
 
 ### Install 📥
 ```bash
-git clone https://github.com/yourusername/gb2pdf
-cd gb2pdf
+git clone https://github.com/tsoodo/gitbook2pdf ./gb2pdf
+cd gb2pdf 
 bun install
 ```
 

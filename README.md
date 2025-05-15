@@ -2,9 +2,9 @@
 
 ![gitbook2pdf gradient image](./img.png)
 
-[![Made with Bun](https://img.shields.io/badge/Made%20with-Bun-orange?style=flat-square&logo=bun)](https://bun.sh)
-![ts](https://flat.badgen.net/badge/Built%20With/TypeScript/blue)
-[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](https://opensource.org/licenses/MIT)
+[![Bun](https://img.shields.io/badge/Bun-000?logo=bun&logoColor=fff)](https://bun.sh)
+[![TypeScript](https://img.shields.io/badge/TypeScript-3178C6?logo=typescript&logoColor=fff)](https://www.typescriptlang.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 
 # 📚➡️📄 gb2pdf

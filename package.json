@@ -1,0 +1,17 @@
+{
+  "name": "gb2pdf",
+  "module": "index.ts",
+  "type": "module",
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "@types/xml2js": "^0.4.14",
+    "axios": "^1.9.0",
+    "puppeteer": "^24.8.2",
+    "xml2js": "^0.6.2"
+  }
+}

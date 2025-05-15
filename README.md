@@ -4,13 +4,15 @@
 
 ## ⚡ Quick Start
 
-```bash
 # Clone and install 📥
+```bash
 git clone https://github.com/yourusername/gb2pdf
 cd gb2pdf
 bun install
+```
 
 # Convert GitBook to PDF 🎯
+```bash
 bun pdf
 ```
 

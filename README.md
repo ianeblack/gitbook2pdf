@@ -35,6 +35,7 @@ bun pdf --url https://your-gitbook.io --merge
 - **🔄 Resume Support**: Continue interrupted conversions
 - **📄 Merge Option**: Combine all pages into single PDF
 - **🎯 Smart Filtering**: Include/exclude patterns with regex support
+- **⌨️ Interactive Controls**: Control conversion while running (q/r/o)
 - **📊 Progress Tracking**: Real-time progress with detailed statistics
 - **🎨 Quality Options**: Multiple quality presets (low/medium/high)
 - **📐 Format Support**: A4, A3, and Letter formats
@@ -49,7 +50,26 @@ bun pdf --url https://your-gitbook.io --merge
 
 ## 💡 Usage
 
+### Merge Mode Prompt
+
+If you don't specify the `--merge` flag, the converter will ask you:
+
+```
+📄 PDF Output Options:
+1. Individual PDFs (organized by category)
+2. Single merged PDF (all content in one file)
+
+Would you like to create a single merged PDF? (y/N):
+```
+
 ### Basic Usage
+
+While the conversion is running, you can use these keyboard shortcuts:
+
+- **`q`** - Quit gracefully (saves progress)
+- **`r`** - Restart conversion from beginning  
+- **`o`** - Open output folder in file manager
+- **`Ctrl+C`** - Force quit
 
 ```bash
 # Interactive mode with prompts

@@ -8,9 +8,10 @@ import chalk from "chalk";
 import ora from "ora";
 import yargs from "yargs";
 import { hideBin } from "yargs/helpers";
+import * as readline from "readline";
+import { exec } from "child_process";
+import { promisify } from "util";
 import type { Config, PageContent, ParsedSitemap, ProcessingResult, ProcessingStats, SitemapUrl } from "./types";
-
-
 
 class GitBookToPDFConverter {
     private config: Config;
@@ -26,10 +27,118 @@ class GitBookToPDFConverter {
     private progressFile: string;
     private processedUrls = new Set<string>();
     private pageContents: PageContent[] = []; // For merge functionality
+    private isProcessing = false;
+    private shouldRestart = false;
+    private currentUrls: string[] = [];
+    private readline: readline.Interface | null = null;
 
     constructor(config: Config) {
         this.config = config;
         this.progressFile = path.join(config.outputDir, '.progress.json');
+        this.setupKeyboardControls();
+    }
+
+    // Setup keyboard controls for interactive operation
+    private setupKeyboardControls(): void {
+        // Enable raw mode to capture single keystrokes
+        if (process.stdin.isTTY) {
+            process.stdin.setRawMode(true);
+            process.stdin.resume();
+            process.stdin.setEncoding('utf8');
+
+            process.stdin.on('data', (key: string) => {
+                const char = key.toLowerCase();
+
+                switch (char) {
+                    case 'q':
+                        this.handleQuit();
+                        break;
+                    case 'r':
+                        this.handleRestart();
+                        break;
+                    case 'o':
+                        this.handleOpenLocation();
+                        break;
+                    case '\u0003': // Ctrl+C
+                        this.handleQuit();
+                        break;
+                }
+            });
+        }
+
+        // Handle process termination signals
+        process.on('SIGINT', () => this.handleQuit());
+        process.on('SIGTERM', () => this.handleQuit());
+    }
+
+    private async handleQuit(): Promise<void> {
+        if (this.isProcessing) {
+            console.log(chalk.yellow('\n\n🛑 Gracefully shutting down...'));
+            console.log(chalk.gray('Please wait while we clean up resources...'));
+
+            // Save current progress
+            await this.saveProgress();
+
+            // Stop processing
+            this.isProcessing = false;
+
+            // Cleanup browser
+            await this.cleanup();
+
+            console.log(chalk.green('✅ Shutdown complete. Progress saved.'));
+            console.log(chalk.blue(`📁 Resume with: ${chalk.bold('bun pdf --url ' + this.config.url + ' --resume')}`));
+        }
+
+        process.exit(0);
+    }
+
+    private async handleRestart(): Promise<void> {
+        if (this.isProcessing) {
+            console.log(chalk.yellow('\n\n🔄 Restarting conversion...'));
+
+            // Save current progress
+            await this.saveProgress();
+
+            // Set restart flag
+            this.shouldRestart = true;
+            this.isProcessing = false;
+        }
+    }
+
+    private async handleOpenLocation(): Promise<void> {
+        const outputPath = path.resolve(this.config.outputDir);
+        console.log(chalk.blue(`\n📂 Opening: ${outputPath}`));
+
+        try {
+            // Cross-platform file manager opening
+            const platform = process.platform;
+            let command = '';
+
+            switch (platform) {
+                case 'darwin': // macOS
+                    command = `open "${outputPath}"`;
+                    break;
+                case 'win32': // Windows
+                    command = `explorer "${outputPath}"`;
+                    break;
+                default: // Linux and others
+                    command = `xdg-open "${outputPath}"`;
+                    break;
+            }
+
+            const execAsync = promisify(exec);
+            await execAsync(command);
+        } catch (error) {
+            console.log(chalk.red(`❌ Could not open file manager. Path: ${outputPath}`));
+        }
+    }
+
+    private displayControls(): void {
+        console.log(chalk.blue('\n⌨️  Interactive Controls:'));
+        console.log(chalk.gray('  q - Quit (saves progress)'));
+        console.log(chalk.gray('  r - Restart conversion'));
+        console.log(chalk.gray('  o - Open output folder'));
+        console.log(chalk.gray('  Ctrl+C - Force quit\n'));
     }
 
     // Initialize browser with optimal settings
@@ -583,111 +692,152 @@ class GitBookToPDFConverter {
         await fs.writeFile(this.progressFile, JSON.stringify(progress, null, 2));
     }
 
-    // Main processing function with parallel execution
+    // Main processing function with parallel execution and interactive controls
     async process(): Promise<void> {
         console.log(chalk.blue('🚀 GitBook to PDF Converter Started'));
         console.log(chalk.gray(`Configuration: ${JSON.stringify({ ...this.config, url: '...' }, null, 2)}`));
 
-        try {
-            // Create output directory
-            await fs.mkdir(this.config.outputDir, { recursive: true });
+        do {
+            this.shouldRestart = false;
+            this.isProcessing = true;
 
-            // Load previous progress if resuming
-            if (this.config.resume) {
-                await this.loadProgress();
-                console.log(chalk.yellow(`Resuming from previous run. ${this.processedUrls.size} URLs already processed.`));
+            try {
+                // Create output directory
+                await fs.mkdir(this.config.outputDir, { recursive: true });
+
+                // Load previous progress if resuming
+                if (this.config.resume && !this.shouldRestart) {
+                    await this.loadProgress();
+                    console.log(chalk.yellow(`Resuming from previous run. ${this.processedUrls.size} URLs already processed.`));
+                }
+
+                // Fetch sitemap
+                const sitemapUrl = `${this.config.url}/sitemap.xml`;
+                const allUrls = await this.fetchSitemap(sitemapUrl);
+                this.currentUrls = allUrls;
+
+                // Filter out already processed URLs if resuming
+                const urlsToProcess = this.config.resume && !this.shouldRestart
+                    ? allUrls.filter(url => !this.processedUrls.has(url))
+                    : allUrls;
+
+                console.log(chalk.green(`Found ${allUrls.length} total URLs, processing ${urlsToProcess.length} URLs`));
+
+                if (this.config.merge) {
+                    console.log(chalk.blue('📄 Merge mode enabled - will create single merged PDF'));
+                }
+
+                // Display interactive controls
+                this.displayControls();
+
+                // Set up concurrency limiter
+                const limit = pLimit(this.config.concurrency);
+                this.stats.total = urlsToProcess.length;
+
+                // Reset stats for restart
+                if (this.shouldRestart) {
+                    this.stats.successful = 0;
+                    this.stats.failed = 0;
+                    this.stats.totalSize = 0;
+                    this.stats.totalDuration = 0;
+                    this.pageContents = [];
+                }
+
+                // Create progress bar
+                const progressBar = ora(`Processing 0/${urlsToProcess.length} URLs`).start();
+
+                // Process URLs in parallel with controlled concurrency
+                const promises = urlsToProcess.map((url, index) =>
+                    limit(async () => {
+                        // Check if we should stop processing
+                        if (!this.isProcessing) {
+                            return { url, success: false, error: 'Stopped by user', duration: 0 };
+                        }
+
+                        let outputPath = '';
+
+                        // Create file path only if not merging
+                        if (!this.config.merge) {
+                            const category = this.getCategory(url);
+                            const categoryDir = path.join(this.config.outputDir, category);
+                            await fs.mkdir(categoryDir, { recursive: true });
+
+                            const fileName = this.createFileName(url, index + this.processedUrls.size + 1);
+                            outputPath = path.join(categoryDir, fileName);
+                        }
+
+                        // Convert to PDF (or extract content for merge)
+                        const result = await this.convertToPDF(url, outputPath);
+
+                        // Update stats only if still processing
+                        if (this.isProcessing) {
+                            if (result.success) {
+                                this.stats.successful++;
+                                this.stats.totalSize += result.size || 0;
+                                this.stats.totalDuration += result.duration || 0;
+                                this.processedUrls.add(url);
+                            } else {
+                                this.stats.failed++;
+                                console.error(chalk.red(`Failed: ${url} - ${result.error}`));
+                            }
+
+                            // Update progress
+                            const processed = this.stats.successful + this.stats.failed;
+                            progressBar.text = `Processing ${processed}/${urlsToProcess.length} URLs (Success: ${this.stats.successful}, Failed: ${this.stats.failed})`;
+
+                            // Save progress periodically
+                            if (processed % 10 === 0) {
+                                await this.saveProgress();
+                            }
+
+                            // Rate limiting
+                            if (this.config.delay > 0) {
+                                await this.delay(this.config.delay);
+                            }
+                        }
+
+                        return result;
+                    })
+                );
+
+                // Wait for all conversions to complete or until stopped
+                await Promise.allSettled(promises);
+
+                if (this.isProcessing) {
+                    progressBar.succeed(`Completed processing ${urlsToProcess.length} URLs`);
+
+                    // Generate merged PDF if enabled and not stopped
+                    if (this.config.merge && this.isProcessing) {
+                        await this.generateMergedPDF();
+                    }
+
+                    // Final progress save
+                    await this.saveProgress();
+
+                    // Print summary
+                    this.printSummary();
+                } else if (this.shouldRestart) {
+                    progressBar.info('Restarting...');
+                    // Reset for restart
+                    this.processedUrls.clear();
+                    this.pageContents = [];
+                    // Don't exit the loop, continue with restart
+                } else {
+                    progressBar.warn('Processing stopped by user');
+                }
+
+            } catch (error: any) {
+                console.error(chalk.red(`Fatal error: ${error.message}`));
+                if (!this.shouldRestart) {
+                    throw error;
+                }
+            } finally {
+                this.isProcessing = false;
+                if (!this.shouldRestart) {
+                    await this.cleanup();
+                }
             }
-
-            // Fetch sitemap
-            const sitemapUrl = `${this.config.url}/sitemap.xml`;
-            const allUrls = await this.fetchSitemap(sitemapUrl);
-
-            // Filter out already processed URLs if resuming
-            const urlsToProcess = this.config.resume
-                ? allUrls.filter(url => !this.processedUrls.has(url))
-                : allUrls;
-
-            console.log(chalk.green(`Found ${allUrls.length} total URLs, processing ${urlsToProcess.length} URLs`));
-
-            if (this.config.merge) {
-                console.log(chalk.blue('📄 Merge mode enabled - will create single merged PDF'));
-            }
-
-            // Set up concurrency limiter
-            const limit = pLimit(this.config.concurrency);
-            this.stats.total = urlsToProcess.length;
-
-            // Create progress bar
-            const progressBar = ora(`Processing 0/${urlsToProcess.length} URLs`).start();
-
-            // Process URLs in parallel with controlled concurrency
-            const promises = urlsToProcess.map((url, index) =>
-                limit(async () => {
-                    let outputPath = '';
-
-                    // Create file path only if not merging
-                    if (!this.config.merge) {
-                        const category = this.getCategory(url);
-                        const categoryDir = path.join(this.config.outputDir, category);
-                        await fs.mkdir(categoryDir, { recursive: true });
-
-                        const fileName = this.createFileName(url, index + this.processedUrls.size + 1);
-                        outputPath = path.join(categoryDir, fileName);
-                    }
-
-                    // Convert to PDF (or extract content for merge)
-                    const result = await this.convertToPDF(url, outputPath);
-
-                    // Update stats
-                    if (result.success) {
-                        this.stats.successful++;
-                        this.stats.totalSize += result.size || 0;
-                        this.stats.totalDuration += result.duration || 0;
-                        this.processedUrls.add(url);
-                    } else {
-                        this.stats.failed++;
-                        console.error(chalk.red(`Failed: ${url} - ${result.error}`));
-                    }
-
-                    // Update progress
-                    const processed = this.stats.successful + this.stats.failed;
-                    progressBar.text = `Processing ${processed}/${urlsToProcess.length} URLs (Success: ${this.stats.successful}, Failed: ${this.stats.failed})`;
-
-                    // Save progress periodically
-                    if (processed % 10 === 0) {
-                        await this.saveProgress();
-                    }
-
-                    // Rate limiting
-                    if (this.config.delay > 0) {
-                        await this.delay(this.config.delay);
-                    }
-
-                    return result;
-                })
-            );
-
-            // Wait for all conversions to complete
-            await Promise.all(promises);
-            progressBar.succeed(`Completed processing ${urlsToProcess.length} URLs`);
-
-            // Generate merged PDF if enabled
-            if (this.config.merge) {
-                await this.generateMergedPDF();
-            }
-
-            // Final progress save
-            await this.saveProgress();
-
-            // Print summary
-            this.printSummary();
-
-        } catch (error: any) {
-            console.error(chalk.red(`Fatal error: ${error.message}`));
-            throw error;
-        } finally {
-            await this.cleanup();
-        }
+        } while (this.shouldRestart);
     }
 
     private printSummary(): void {
@@ -733,10 +883,22 @@ class GitBookToPDFConverter {
             await this.browser.close();
             this.browser = null;
         }
+
+        // Restore terminal settings
+        if (process.stdin.isTTY) {
+            process.stdin.setRawMode(false);
+            process.stdin.pause();
+        }
+
+        // Close readline interface if exists
+        if (this.readline) {
+            this.readline.close();
+            this.readline = null;
+        }
     }
 }
 
-// CLI setup with yargs
+// CLI setup with yargs and interactive prompts
 async function setupCLI(): Promise<Config> {
     const argv = await yargs(hideBin(process.argv))
         .option('url', {
@@ -819,12 +981,7 @@ async function setupCLI(): Promise<Config> {
         console.log(chalk.blue('Welcome to GitBook to PDF Converter!'));
         console.log('Please enter the root URL of your Gitbook (e.g., https://your-gitbook.io/)');
 
-        url = await new Promise<string>(resolve => {
-            process.stdout.write('> ');
-            process.stdin.once('data', (data: Buffer) => {
-                resolve(data.toString().trim());
-            });
-        });
+        url = await promptForInput('> ');
     }
 
     // Validate URL
@@ -833,6 +990,23 @@ async function setupCLI(): Promise<Config> {
     } catch (error) {
         console.error(chalk.red('Invalid URL format. Please provide a valid URL.'));
         process.exit(1);
+    }
+
+    // Ask about merge if not specified via CLI
+    let merge = argv.merge;
+    if (!argv.merge && process.argv.indexOf('--merge') === -1) {
+        console.log(chalk.blue('\n📄 PDF Output Options:'));
+        console.log('1. Individual PDFs (organized by category)');
+        console.log('2. Single merged PDF (all content in one file)');
+
+        const mergeChoice = await promptForInput('\n> ');
+        merge = mergeChoice.startsWith('2');
+
+        if (merge) {
+            console.log(chalk.green('✅ Merge mode enabled'));
+        } else {
+            console.log(chalk.green('✅ Individual PDF mode enabled'));
+        }
     }
 
     return {
@@ -848,8 +1022,23 @@ async function setupCLI(): Promise<Config> {
         includePatterns: argv.include as string[],
         excludePatterns: argv.exclude as string[],
         timeout: argv.timeout,
-        merge: argv.merge,
+        merge,
     };
+}
+
+// Helper function for prompting user input
+async function promptForInput(prompt: string): Promise<string> {
+    return new Promise<string>((resolve) => {
+        const rl = readline.createInterface({
+            input: process.stdin,
+            output: process.stdout,
+        });
+
+        rl.question(prompt, (answer: string) => {
+            rl.close();
+            resolve(answer.trim());
+        });
+    });
 }
 
 // Main execution

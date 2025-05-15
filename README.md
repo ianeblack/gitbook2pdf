@@ -1,7 +1,9 @@
+[![wakatime](https://wakatime.com/badge/user/018bb5b7-2775-467e-80b5-4a754a579895/project/23b16f72-f0f5-46d5-81fd-6460898e1c33.svg)](https://wakatime.com/badge/user/018bb5b7-2775-467e-80b5-4a754a579895/project/23b16f72-f0f5-46d5-81fd-6460898e1c33)
+
 ![gitbook2pdf gradient image](./img.png)
 
 [![Made with Bun](https://img.shields.io/badge/Made%20with-Bun-orange?style=flat-square&logo=bun)](https://bun.sh)
-[![TypeScript](https://img.shields.io/badge/TypeScript-blue?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
+[![TypeScript](https://img.shields.io/badge/TypeScript?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
 
@@ -302,7 +304,6 @@ MIT License © 2025 Ian Irizarry
 - Built with ❤️ using [Bun](https://bun.sh)
 - Powered by [Puppeteer](https://pptr.dev)
 - Inspired by the need for offline documentation
-- [![wakatime](https://wakatime.com/badge/user/018bb5b7-2775-467e-80b5-4a754a579895/project/23b16f72-f0f5-46d5-81fd-6460898e1c33.svg)](https://wakatime.com/badge/user/018bb5b7-2775-467e-80b5-4a754a579895/project/23b16f72-f0f5-46d5-81fd-6460898e1c33)
 
 ---
 

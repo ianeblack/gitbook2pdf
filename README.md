@@ -23,10 +23,9 @@ bun install
 bun pdf
 
 # Direct conversion
-bun pdf --url https://your-gitbook.io
-
+bun pdf --url https://careers.gitbook.com/
 # Generate single merged PDF
-bun pdf --url https://your-gitbook.io --merge
+bun pdf --url https://careers.gitbook.com/ --merge
 ```
 
 ## 🚀 Features

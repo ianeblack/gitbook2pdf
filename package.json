@@ -8,15 +8,21 @@
     "dev": "bun --watch index.ts"
   },
   "devDependencies": {
-    "@types/bun": "latest"
+    "@types/bun": "latest",
+    "@types/node": "^22.15.18"
   },
   "peerDependencies": {
     "typescript": "^5"
   },
   "dependencies": {
     "@types/xml2js": "^0.4.14",
+    "@types/yargs": "^17.0.33",
     "axios": "^1.9.0",
+    "chalk": "^5.4.1",
+    "ora": "^8.2.0",
+    "p-limit": "^6.2.0",
     "puppeteer": "^24.8.2",
-    "xml2js": "^0.6.2"
+    "xml2js": "^0.6.2",
+    "yargs": "^17.7.2"
   }
 }

@@ -1,425 +1,659 @@
 import puppeteer, { Page, Browser, type PDFOptions } from "puppeteer";
-import axios, { type AxiosResponse } from "axios";
+import axios, { type AxiosResponse, type AxiosRequestConfig } from "axios";
 import xml2js from "xml2js";
-import fs from "fs";
+import fs from "fs/promises";
 import path from "path";
-import type { PageContentCheck, ParsedSitemap, PdfCaptureOptions, SitemapUrl } from "./types";
+import pLimit from "p-limit";
+import chalk from "chalk";
+import ora from "ora";
+import yargs from "yargs";
+import { hideBin } from "yargs/helpers";
+import type { Config, ParsedSitemap, ProcessingResult, ProcessingStats, SitemapUrl } from "./types";
 
-// Default URL (used as an example)
-let URL_GITBOOK = "";
 
-/**
- * Function to prompt the user for the Gitbook URL
- * @returns {Promise<string>} The URL entered by the user
- */
-async function promptForGitbookUrl(): Promise<string> {
-    console.log("Welcome to Gitbook to PDF/PNG Converter!");
-    console.log("Please enter the root URL of your Gitbook (e.g., https://your-gitbook.io/)");
 
-    // Use Bun's built-in prompt
-    const url = await new Promise<string>(resolve => {
-        process.stdout.write("> ");
-        process.stdin.once("data", (data: Buffer) => {
-            resolve(data.toString().trim());
-        });
-    });
+class GitBookToPDFConverter {
+    private config: Config;
+    private browser: Browser | null = null;
+    private stats: ProcessingStats = {
+        total: 0,
+        successful: 0,
+        failed: 0,
+        skipped: 0,
+        totalSize: 0,
+        totalDuration: 0
+    };
+    private progressFile: string;
+    private processedUrls = new Set<string>();
 
-    // Validate URL format
-    try {
-        new URL(url);
-        return url;
-    } catch (error) {
-        console.error("Invalid URL format. Please try again with a valid URL.");
-        return promptForGitbookUrl(); // Recursively ask again
+    constructor(config: Config) {
+        this.config = config;
+        this.progressFile = path.join(config.outputDir, '.progress.json');
     }
-}
 
-// Function to fetch and parse sitemap XML with better error handling
-async function fetchSitemap(url: string): Promise<string[] | null> {
-    try {
-        console.log(`Fetching sitemap from: ${url}`);
-        const response: AxiosResponse<string> = await axios.get(url);
-        const sitemapXML = response.data;
+    // Initialize browser with optimal settings
+    private async initBrowser(): Promise<void> {
+        if (this.browser) return;
 
-        console.log(`Sitemap XML content preview:`, sitemapXML.substring(0, 500));
+        const args = [
+            '--no-sandbox',
+            '--disable-setuid-sandbox',
+            '--disable-dev-shm-usage',
+            '--disable-gpu',
+            '--disable-web-security',
+            '--disable-features=VizDisplayCompositor',
+            '--disable-background-timer-throttling',
+            '--disable-renderer-backgrounding',
+            '--disable-backgrounding-occluded-windows',
+            '--disable-ipc-flooding-protection',
+            '--memory-pressure-off'
+        ];
 
-        // Parse the XML sitemap into JSON
-        const parsedSitemap: ParsedSitemap = await xml2js.parseStringPromise(sitemapXML, {
-            explicitArray: false,
-            ignoreAttrs: false,
+        this.browser = await puppeteer.launch({
+            headless: true,
+            args,
+            defaultViewport: { width: 1280, height: 1024 }
         });
-
-        console.log(
-            "Parsed sitemap structure:",
-            JSON.stringify(parsedSitemap, null, 2),
-        );
-
-        // Check if this is a sitemap index file
-        if ('sitemapindex' in parsedSitemap) {
-            console.log("Detected sitemap index file");
-            const sitemapIndexUrls = parsedSitemap.sitemapindex.sitemap;
-
-            // Handle both single sitemap and array of sitemaps
-            const sitemaps = Array.isArray(sitemapIndexUrls)
-                ? sitemapIndexUrls
-                : [sitemapIndexUrls];
-
-            let allUrls: string[] = [];
-
-            // Fetch each individual sitemap
-            for (const sitemapInfo of sitemaps) {
-                const sitemapUrl = sitemapInfo.loc;
-                console.log(`Fetching individual sitemap: ${sitemapUrl}`);
-                const individualUrls = await fetchSitemap(sitemapUrl);
-                if (individualUrls) {
-                    allUrls = allUrls.concat(individualUrls);
-                }
-            }
-
-            return allUrls;
-        }
-
-        // Check if this is a regular sitemap with urlset
-        if ('urlset' in parsedSitemap && parsedSitemap.urlset?.url) {
-            const urls = parsedSitemap.urlset.url;
-
-            // Handle both single URL and array of URLs
-            const urlArray = Array.isArray(urls) ? urls : [urls];
-
-            return urlArray
-                .map((url: SitemapUrl): string | null => {
-                    // Handle different structures for URL objects
-                    if (typeof url === "string") {
-                        return url;
-                    } else if (url.loc) {
-                        return typeof url.loc === "string" ? url.loc : url.loc[0];
-                    }
-                    return null;
-                })
-                .filter((url): url is string => Boolean(url));
-        }
-
-        // Check for other possible structures
-        console.error(
-            "Unknown sitemap structure. Available properties:",
-            Object.keys(parsedSitemap),
-        );
-        return null;
-    } catch (error: any) {
-        console.error("Error fetching or parsing sitemap:", error);
-
-        // If the sitemap doesn't exist, try some common alternatives
-        if (error.response && error.response.status === 404) {
-            console.log("Sitemap.xml not found, trying alternatives...");
-
-            // Try alternative sitemap URLs
-            const alternatives = [
-                `${URL_GITBOOK}/sitemap_index.xml`,
-                `${URL_GITBOOK}/sitemaps.xml`,
-                `${URL_GITBOOK}/sitemap-index.xml`,
-            ];
-
-            for (const altUrl of alternatives) {
-                try {
-                    console.log(`Trying alternative: ${altUrl}`);
-                    return await fetchSitemap(altUrl);
-                } catch (altError) {
-                    console.log(`Alternative ${altUrl} also failed`);
-                }
-            }
-        }
-
-        return null;
     }
-}
 
-// Function to convert a page to PDF with selectable text and high-quality images
-async function takeFullPagePdf(
-    page: Page,
-    url: string,
-    outputPath: string,
-    options: PdfCaptureOptions = {}
-): Promise<boolean> {
-    try {
-        console.log(`Processing: ${url}`);
+    // Create a new page with optimal settings
+    private async createPage(): Promise<Page> {
+        if (!this.browser) await this.initBrowser();
 
-        // Set the viewport to a reasonable width (e.g., 1280px) for full-page capture
-        await page.setViewport({ width: 1280, height: 2048 });
+        const page = await this.browser!.newPage();
 
-        // Go to the page and wait for it to load completely
-        await page.goto(url, {
-            waitUntil: ["networkidle2", "domcontentloaded"],
-            timeout: 45000,
+        // Set up request interception for performance
+        await page.setRequestInterception(true);
+        page.on('request', (request) => {
+            const resourceType = request.resourceType();
+
+            // Block unnecessary resources to speed up loading
+            if (['font', 'stylesheet', 'image'].includes(resourceType) && !this.isEssentialResource(request.url())) {
+                request.abort();
+            } else {
+                request.continue();
+            }
         });
 
-        // Wait for GitBook content to load - look for common GitBook elements
+        // Configure page for better performance
+        await page.setCacheEnabled(false);
+        await page.setJavaScriptEnabled(true);
+
+        return page;
+    }
+
+    private isEssentialResource(url: string): boolean {
+        // Allow essential stylesheets and images for GitBook content
+        return url.includes('gitbook') || url.includes('fonts.googleapis.com');
+    }
+
+    // Enhanced sitemap fetching with retry logic
+    private async fetchSitemap(url: string, retryCount = 0): Promise<string[]> {
+        const spinner = ora(`Fetching sitemap from: ${url}`).start();
+
         try {
-            await page.waitForSelector(
-                'main, article, [data-testid="content"], .gitbook-content, .page-content',
-                {
-                    timeout: 10000,
+            const config: AxiosRequestConfig = {
+                timeout: this.config.timeout,
+                headers: {
+                    'User-Agent': 'Mozilla/5.0 (compatible; GitBook-PDF-Converter/1.0)',
                 },
-            );
-            console.log(`Content detected on ${url}`);
-        } catch (e) {
-            console.log(
-                `Warning: Content selector not found on ${url}, proceeding anyway`,
-            );
-        }
-
-        // Additional wait for dynamic content
-        await new Promise<void>((resolve) => setTimeout(resolve, 3000));
-
-        // Debug: Check if there's content on the page
-        const hasContent: PageContentCheck = await page.evaluate((): PageContentCheck => {
-            const body = document.body;
-            const textContent = body.innerText || body.textContent || "";
-            const hasVisibleElements =
-                document.querySelectorAll("p, h1, h2, h3, h4, h5, h6, div").length > 0;
-
-            return {
-                hasText: textContent.trim().length > 0,
-                textLength: textContent.length,
-                hasElements: hasVisibleElements,
-                url: window.location.href,
-                title: document.title,
             };
-        });
 
-        console.log(`Page content check for ${url}:`, hasContent);
+            const response: AxiosResponse<string> = await axios.get(url, config);
 
-        if (!hasContent.hasText && !hasContent.hasElements) {
-            console.warn(
-                `⚠️  No content detected on ${url} - might be a redirect or login required`,
-            );
-        }
+            const parsedSitemap: ParsedSitemap = await xml2js.parseStringPromise(response.data, {
+                explicitArray: false,
+                ignoreAttrs: false,
+            });
 
-        // Only hide elements if the option is enabled (default: false for debugging)
-        if (options.hideElements !== false) {
-            await page.evaluate(() => {
-                // More conservative element hiding - only hide clear navigation elements
-                const selectorsToHide = [
-                    // Only hide obvious navigation and sidebar elements
-                    "nav:not(main nav)",
-                    "aside:not(main aside)",
-                    ".sidebar:not(main .sidebar)",
-                    ".navigation:not(main .navigation)",
-                    ".navbar:not(main .navbar)",
-                    ".menu:not(main .menu)",
-                    ".header:not(main .header)",
-                    ".footer:not(main .footer)",
+            let urls: string[] = [];
 
-                    // GitBook specific - but more conservative
-                    'header[data-testid="header"]',
-                    'aside[data-testid="sidebar"]',
-                    'div[data-testid="search-button"]',
-                    'div[data-testid="page-footer-navigation"]',
+            // Handle sitemap index
+            if ('sitemapindex' in parsedSitemap) {
+                const sitemaps = Array.isArray(parsedSitemap.sitemapindex!.sitemap)
+                    ? parsedSitemap.sitemapindex!.sitemap
+                    : [parsedSitemap.sitemapindex!.sitemap];
+
+                for (const sitemap of sitemaps) {
+                    const sitemapUrls = await this.fetchSitemap(sitemap.loc);
+                    urls.push(...sitemapUrls);
+                }
+            }
+            // Handle regular sitemap
+            else if ('urlset' in parsedSitemap && parsedSitemap.urlset?.url) {
+                const urlObjects = Array.isArray(parsedSitemap.urlset.url)
+                    ? parsedSitemap.urlset.url
+                    : [parsedSitemap.urlset.url];
+
+                urls = urlObjects
+                    .map((url: SitemapUrl) => {
+                        if (typeof url === 'string') return url;
+                        return Array.isArray(url.loc) ? url.loc[0] : url.loc;
+                    })
+                    .filter(Boolean);
+            }
+
+            spinner.succeed(`Found ${urls.length} URLs in sitemap`);
+            return this.filterUrls(urls);
+
+        } catch (error: any) {
+            spinner.fail(`Failed to fetch sitemap: ${error.message}`);
+
+            // Retry logic
+            if (retryCount < this.config.retries) {
+                console.log(`Retrying... (${retryCount + 1}/${this.config.retries})`);
+                await this.delay(1000 * (retryCount + 1));
+                return this.fetchSitemap(url, retryCount + 1);
+            }
+
+            // Try alternative URLs
+            if (retryCount === 0) {
+                const alternatives = [
+                    url.replace('/sitemap.xml', '/sitemap_index.xml'),
+                    url.replace('/sitemap.xml', '/sitemaps.xml'),
+                    url.replace('/sitemap.xml', '/sitemap-index.xml'),
                 ];
 
-                // Hide elements more carefully
-                selectorsToHide.forEach((selector) => {
+                for (const altUrl of alternatives) {
                     try {
-                        const elements = document.querySelectorAll(selector);
-                        elements.forEach((element) => {
-                            // Don't hide elements that are clearly part of main content
-                            if (!element.closest('main, article, .content, [role="main"]')) {
-                                (element as HTMLElement).style.visibility = "hidden"; // Use visibility instead of display to maintain layout
-                                (element as HTMLElement).style.height = "0px";
-                                (element as HTMLElement).style.overflow = "hidden";
-                            }
-                        });
+                        return await this.fetchSitemap(altUrl, 0);
                     } catch (e) {
-                        console.log(`Could not hide element with selector: ${selector}`, e);
+                        continue;
                     }
-                });
-            });
-        }
+                }
+            }
 
-        // Convert the page to PDF with high-quality images
-        const pdfOptions: PDFOptions = {
+            throw new Error(`Could not fetch sitemap after ${this.config.retries} retries`);
+        }
+    }
+
+    // Filter URLs based on include/exclude patterns
+    private filterUrls(urls: string[]): string[] {
+        return urls.filter(url => {
+            // Check exclude patterns
+            if (this.config.excludePatterns.some(pattern =>
+                new RegExp(pattern).test(url))) {
+                return false;
+            }
+
+            // Check include patterns (if any)
+            if (this.config.includePatterns.length > 0) {
+                return this.config.includePatterns.some(pattern =>
+                    new RegExp(pattern).test(url));
+            }
+
+            return true;
+        });
+    }
+
+    // Enhanced PDF generation with better error handling
+    private async convertToPDF(url: string, outputPath: string): Promise<ProcessingResult> {
+        const startTime = Date.now();
+        let page: Page | null = null;
+
+        try {
+            page = await this.createPage();
+
+            // Set viewport for consistent rendering
+            await page.setViewport({ width: 1280, height: 1024 });
+
+            // Navigate with enhanced wait conditions
+            await page.goto(url, {
+                waitUntil: ['networkidle2', 'domcontentloaded'],
+                timeout: this.config.timeout,
+            });
+
+            // Wait for content to load
+            await this.waitForContent(page, url);
+
+            // Hide unwanted elements if configured
+            if (this.config.hideElements) {
+                await this.hideNavigationElements(page);
+            }
+
+            // Generate PDF with quality settings
+            const pdfOptions = this.getPDFOptions(outputPath);
+            await page.pdf(pdfOptions);
+
+            // Get file size for stats
+            const stats = await fs.stat(outputPath);
+            const duration = Date.now() - startTime;
+
+            return {
+                url,
+                success: true,
+                outputPath,
+                size: stats.size,
+                duration
+            };
+
+        } catch (error: any) {
+            const duration = Date.now() - startTime;
+
+            // Take a debug screenshot on error
+            if (page) {
+                try {
+                    const screenshotPath = outputPath.replace('.pdf', '_error.png');
+                    await page.screenshot({ path: screenshotPath, fullPage: true });
+                } catch (e) {
+                    // Ignore screenshot errors
+                }
+            }
+
+            return {
+                url,
+                success: false,
+                error: error.message,
+                duration
+            };
+        } finally {
+            if (page) {
+                await page.close();
+            }
+        }
+    }
+
+    private async waitForContent(page: Page, url: string): Promise<void> {
+        try {
+            // Wait for common GitBook content selectors
+            await page.waitForSelector(
+                'main, article, [data-testid="content"], .gitbook-content, .page-content, .page-inner',
+                { timeout: 10000 }
+            );
+
+            // Additional wait for dynamic content
+            await this.delay(2000);
+
+            // Check if page has meaningful content
+            const hasContent = await page.evaluate(() => {
+                const body = document.body;
+                const textContent = body.innerText || body.textContent || '';
+                return textContent.trim().length > 100; // Minimum content threshold
+            });
+
+            if (!hasContent) {
+                console.warn(chalk.yellow(`Warning: Minimal content detected on ${url}`));
+            }
+
+        } catch (e) {
+            console.warn(chalk.yellow(`Warning: Content selectors not found on ${url}, proceeding anyway`));
+            await this.delay(3000); // Fallback wait
+        }
+    }
+
+    private async hideNavigationElements(page: Page): Promise<void> {
+        await page.evaluate(() => {
+            const selectorsToHide = [
+                'nav:not(main nav)',
+                'aside:not(main aside)',
+                '.sidebar',
+                '.navigation',
+                '.navbar',
+                '.menu',
+                'header:not(main header)',
+                'footer:not(main footer)',
+                '[data-testid="sidebar"]',
+                '[data-testid="header"]',
+                '[data-testid="search-button"]',
+                '[data-testid="page-footer-navigation"]',
+                '.gitbook-sidebar',
+                '.gitbook-header'
+            ];
+
+            selectorsToHide.forEach(selector => {
+                try {
+                    const elements = document.querySelectorAll(selector);
+                    elements.forEach(element => {
+                        if (!element.closest('main, article, .content, [role="main"]')) {
+                            (element as HTMLElement).style.display = 'none';
+                        }
+                    });
+                } catch (e) {
+                    // Ignore individual selector errors
+                }
+            });
+        });
+    }
+
+    private getPDFOptions(outputPath: string): PDFOptions {
+        const qualitySettings = {
+            low: { scale: 0.6, format: 'A4' as const },
+            medium: { scale: 0.8, format: 'A4' as const },
+            high: { scale: 1.0, format: 'A4' as const }
+        };
+
+        const { scale } = qualitySettings[this.config.quality];
+
+        return {
             path: outputPath,
-            format: "A4",
+            format: this.config.format,
             printBackground: true,
-            scale: 0.8, // Slightly smaller scale to fit more content
-            preferCSSPageSize: false, // Let PDF determine page size
+            scale,
+            preferCSSPageSize: false,
             margin: {
-                top: "0.5cm",
-                right: "0.5cm",
-                bottom: "0.5cm",
-                left: "0.5cm",
+                top: '0.5cm',
+                right: '0.5cm',
+                bottom: '0.5cm',
+                left: '0.5cm',
             },
             displayHeaderFooter: false,
         };
+    }
 
-        await page.pdf(pdfOptions);
-
-        console.log(`✅ Saved PDF for: ${url} at ${outputPath}`);
-        return true;
-    } catch (error) {
-        console.error(`❌ Failed to take PDF for: ${url}`, error);
-
-        // Try to take a screenshot for debugging failed pages
+    // Create organized file structure
+    private createFileName(url: string, counter: number): string {
         try {
-            const screenshotPath = outputPath.replace(".pdf", "_error.png");
-            await page.screenshot({
-                path: screenshotPath,
-                fullPage: true,
-            });
-            console.log(`📸 Error screenshot saved: ${screenshotPath}`);
-        } catch (screenshotError) {
-            console.log("Could not take error screenshot");
-        }
+            const urlObj = new URL(url);
+            const pathParts = urlObj.pathname.split('/').filter(Boolean);
 
-        return false;
-    }
-}
+            let filename = pathParts
+                .join('_')
+                .replace(/[^a-zA-Z0-9\-_]/g, '_')
+                .substring(0, 100);
 
-// Function to group URLs based on their categories
-function categorizeUrl(url: string): string {
-    try {
-        const urlObj = new URL(url);
-        const pathParts = urlObj.pathname.split("/").filter(Boolean);
-
-        if (pathParts.length === 0) {
-            return "home";
-        }
-
-        // For GitBook URLs, the category is usually the first part of the path
-        return pathParts[0] || "unknown";
-    } catch (error) {
-        console.error(`Error parsing URL: ${url}`, error);
-        return "unknown";
-    }
-}
-
-// Function to create a sanitized filename from URL
-function createFilename(url: string, counter: number): string {
-    try {
-        const urlObj = new URL(url);
-        let filename = urlObj.pathname
-            .split("/")
-            .filter(Boolean)
-            .join("_")
-            .replace(/[^a-zA-Z0-9\-_]/g, "_")
-            .substring(0, 100); // Limit filename length
-
-        if (!filename || filename === "_") {
-            filename = "index";
-        }
-
-        return `${counter.toString().padStart(3, "0")}_${filename}.pdf`;
-    } catch (error) {
-        return `${counter.toString().padStart(3, "0")}_page.pdf`;
-    }
-}
-
-// Main function to run the script
-async function run(): Promise<void> {
-    // Prompt the user for the Gitbook URL
-    URL_GITBOOK = await promptForGitbookUrl();
-    console.log(`Using Gitbook URL: ${URL_GITBOOK}`);
-
-    const sitemapUrl = `${URL_GITBOOK}/sitemap.xml`;
-    const saveDir = "./pdfs";
-
-    // Create the output directory if it doesn't exist
-    if (!fs.existsSync(saveDir)) {
-        fs.mkdirSync(saveDir, { recursive: true });
-    }
-
-    // Fetch the sitemap URLs
-    console.log("Starting sitemap fetch...");
-    const urls = await fetchSitemap(sitemapUrl);
-
-    if (!urls || urls.length === 0) {
-        console.error("No URLs found in sitemap or sitemap fetch failed");
-        return;
-    }
-
-    console.log(`Found ${urls.length} URLs to process`);
-
-    // Filter out any invalid URLs and deduplicate
-    const validUrls = [
-        ...new Set(
-            urls.filter((url) => {
-                try {
-                    new URL(url);
-                    return true;
-                } catch {
-                    console.warn(`Skipping invalid URL: ${url}`);
-                    return false;
-                }
-            }),
-        ),
-    ];
-
-    console.log(`Processing ${validUrls.length} valid URLs`);
-
-    const browser: Browser = await puppeteer.launch({
-        headless: true,
-        args: ["--no-sandbox", "--disable-setuid-sandbox"],
-    });
-
-    const page: Page = await browser.newPage();
-
-    // Initialize the page counter
-    let pageCounter = 1;
-    let successCount = 0;
-    let failureCount = 0;
-
-    // Loop through each URL in the sitemap
-    for (const url of validUrls) {
-        try {
-            // Determine the category based on the URL
-            const category = categorizeUrl(url);
-            const categoryDir = path.join(saveDir, category);
-
-            // Create a folder for the category if it doesn't exist
-            if (!fs.existsSync(categoryDir)) {
-                fs.mkdirSync(categoryDir, { recursive: true });
+            if (!filename || filename === '_') {
+                filename = 'index';
             }
 
-            // Generate a descriptive filename for the PDF
-            const pdfFileName = createFilename(url, pageCounter);
-            const pdfPath = path.join(categoryDir, pdfFileName);
-
-            // Capture the full page as a PDF with options
-            const success = await takeFullPagePdf(page, url, pdfPath, {
-                hideElements: false, // Disable element hiding initially to debug
-                debug: pageCounter <= 3, // Take debug screenshots for first 3 pages
-            });
-
-            if (success) {
-                successCount++;
-            } else {
-                failureCount++;
-            }
-
-            // Increment the page counter
-            pageCounter++;
-
-            // Add a small delay between requests to be respectful
-            await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+            return `${counter.toString().padStart(3, '0')}_${filename}.pdf`;
         } catch (error) {
-            console.error(`Error processing URL ${url}:`, error);
-            failureCount++;
-            pageCounter++;
+            return `${counter.toString().padStart(3, '0')}_page.pdf`;
         }
     }
 
-    await browser.close();
+    private getCategory(url: string): string {
+        try {
+            const urlObj = new URL(url);
+            const pathParts = urlObj.pathname.split('/').filter(Boolean);
+            return pathParts[0] || 'home';
+        } catch (error) {
+            return 'unknown';
+        }
+    }
 
-    console.log("\n=== Summary ===");
-    console.log(`Total URLs processed: ${validUrls.length}`);
-    console.log(`Successful PDFs: ${successCount}`);
-    console.log(`Failed PDFs: ${failureCount}`);
-    console.log(`Output directory: ${path.resolve(saveDir)}`);
+    // Progress tracking and resume capability
+    private async loadProgress(): Promise<void> {
+        try {
+            const progressData = await fs.readFile(this.progressFile, 'utf-8');
+            const progress = JSON.parse(progressData);
+            this.processedUrls = new Set(progress.processedUrls || []);
+            this.stats = { ...this.stats, ...progress.stats };
+        } catch (error) {
+            // No existing progress file
+        }
+    }
+
+    private async saveProgress(): Promise<void> {
+        const progress = {
+            processedUrls: Array.from(this.processedUrls),
+            stats: this.stats,
+            timestamp: new Date().toISOString()
+        };
+
+        await fs.writeFile(this.progressFile, JSON.stringify(progress, null, 2));
+    }
+
+    // Main processing function with parallel execution
+    async process(): Promise<void> {
+        console.log(chalk.blue('🚀 GitBook to PDF Converter Started'));
+        console.log(chalk.gray(`Configuration: ${JSON.stringify(this.config, null, 2)}`));
+
+        try {
+            // Create output directory
+            await fs.mkdir(this.config.outputDir, { recursive: true });
+
+            // Load previous progress if resuming
+            if (this.config.resume) {
+                await this.loadProgress();
+                console.log(chalk.yellow(`Resuming from previous run. ${this.processedUrls.size} URLs already processed.`));
+            }
+
+            // Fetch sitemap
+            const sitemapUrl = `${this.config.url}/sitemap.xml`;
+            const allUrls = await this.fetchSitemap(sitemapUrl);
+
+            // Filter out already processed URLs if resuming
+            const urlsToProcess = this.config.resume
+                ? allUrls.filter(url => !this.processedUrls.has(url))
+                : allUrls;
+
+            console.log(chalk.green(`Found ${allUrls.length} total URLs, processing ${urlsToProcess.length} URLs`));
+
+            // Set up concurrency limiter
+            const limit = pLimit(this.config.concurrency);
+            this.stats.total = urlsToProcess.length;
+
+            // Create progress bar
+            const progressBar = ora(`Processing 0/${urlsToProcess.length} URLs`).start();
+
+            // Process URLs in parallel with controlled concurrency
+            const promises = urlsToProcess.map((url, index) =>
+                limit(async () => {
+                    // Create file path
+                    const category = this.getCategory(url);
+                    const categoryDir = path.join(this.config.outputDir, category);
+                    await fs.mkdir(categoryDir, { recursive: true });
+
+                    const fileName = this.createFileName(url, index + this.processedUrls.size + 1);
+                    const outputPath = path.join(categoryDir, fileName);
+
+                    // Convert to PDF
+                    const result = await this.convertToPDF(url, outputPath);
+
+                    // Update stats
+                    if (result.success) {
+                        this.stats.successful++;
+                        this.stats.totalSize += result.size || 0;
+                        this.stats.totalDuration += result.duration || 0;
+                        this.processedUrls.add(url);
+                    } else {
+                        this.stats.failed++;
+                        console.error(chalk.red(`Failed: ${url} - ${result.error}`));
+                    }
+
+                    // Update progress
+                    const processed = this.stats.successful + this.stats.failed;
+                    progressBar.text = `Processing ${processed}/${urlsToProcess.length} URLs (Success: ${this.stats.successful}, Failed: ${this.stats.failed})`;
+
+                    // Save progress periodically
+                    if (processed % 10 === 0) {
+                        await this.saveProgress();
+                    }
+
+                    // Rate limiting
+                    if (this.config.delay > 0) {
+                        await this.delay(this.config.delay);
+                    }
+
+                    return result;
+                })
+            );
+
+            // Wait for all conversions to complete
+            await Promise.all(promises);
+            progressBar.succeed(`Completed processing ${urlsToProcess.length} URLs`);
+
+            // Final progress save
+            await this.saveProgress();
+
+            // Print summary
+            this.printSummary();
+
+        } catch (error: any) {
+            console.error(chalk.red(`Fatal error: ${error.message}`));
+            throw error;
+        } finally {
+            await this.cleanup();
+        }
+    }
+
+    private printSummary(): void {
+        console.log(chalk.blue('\n📊 Processing Summary'));
+        console.log(chalk.green(`✅ Successful: ${this.stats.successful}`));
+        console.log(chalk.red(`❌ Failed: ${this.stats.failed}`));
+        console.log(chalk.cyan(`📁 Total Size: ${this.formatBytes(this.stats.totalSize)}`));
+        console.log(chalk.cyan(`⏱️  Total Duration: ${this.formatDuration(this.stats.totalDuration)}`));
+        console.log(chalk.gray(`📂 Output Directory: ${path.resolve(this.config.outputDir)}`));
+
+        if (this.stats.successful > 0) {
+            const avgSize = this.stats.totalSize / this.stats.successful;
+            const avgDuration = this.stats.totalDuration / this.stats.successful;
+            console.log(chalk.cyan(`📊 Average Size: ${this.formatBytes(avgSize)}`));
+            console.log(chalk.cyan(`📊 Average Duration: ${this.formatDuration(avgDuration)}`));
+        }
+    }
+
+    private formatBytes(bytes: number): string {
+        const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+        if (bytes === 0) return '0 Bytes';
+        const i = Math.floor(Math.log(bytes) / Math.log(1024));
+        return Math.round(bytes / Math.pow(1024, i) * 100) / 100 + ' ' + sizes[i];
+    }
+
+    private formatDuration(ms: number): string {
+        const seconds = ms / 1000;
+        const minutes = Math.floor(seconds / 60);
+        const remainingSeconds = Math.round(seconds % 60);
+        return minutes > 0 ? `${minutes}m ${remainingSeconds}s` : `${remainingSeconds}s`;
+    }
+
+    private async delay(ms: number): Promise<void> {
+        return new Promise(resolve => setTimeout(resolve, ms));
+    }
+
+    private async cleanup(): Promise<void> {
+        if (this.browser) {
+            await this.browser.close();
+            this.browser = null;
+        }
+    }
 }
 
-// Export the main function for testing
-export { run, fetchSitemap, categorizeUrl, createFilename };
+// CLI setup with yargs
+async function setupCLI(): Promise<Config> {
+    const argv = await yargs(hideBin(process.argv))
+        .option('url', {
+            alias: 'u',
+            type: 'string',
+            description: 'GitBook URL',
+        })
+        .option('output', {
+            alias: 'o',
+            type: 'string',
+            default: './pdfs',
+            description: 'Output directory',
+        })
+        .option('concurrency', {
+            alias: 'c',
+            type: 'number',
+            default: 3,
+            description: 'Number of concurrent PDF generations',
+        })
+        .option('retries', {
+            alias: 'r',
+            type: 'number',
+            default: 3,
+            description: 'Number of retries for failed requests',
+        })
+        .option('delay', {
+            alias: 'd',
+            type: 'number',
+            default: 1000,
+            description: 'Delay between requests (ms)',
+        })
+        .option('hide-elements', {
+            type: 'boolean',
+            default: true,
+            description: 'Hide navigation elements',
+        })
+        .option('format', {
+            type: 'string',
+            default: 'A4',
+            choices: ['A4', 'A3', 'Letter'],
+            description: 'PDF format',
+        })
+        .option('quality', {
+            type: 'string',
+            default: 'medium',
+            choices: ['low', 'medium', 'high'],
+            description: 'PDF quality',
+        })
+        .option('resume', {
+            type: 'boolean',
+            default: false,
+            description: 'Resume from previous run',
+        })
+        .option('include', {
+            type: 'array',
+            default: [],
+            description: 'Include URL patterns (regex)',
+        })
+        .option('exclude', {
+            type: 'array',
+            default: [],
+            description: 'Exclude URL patterns (regex)',
+        })
+        .option('timeout', {
+            type: 'number',
+            default: 30000,
+            description: 'Request timeout (ms)',
+        })
+        .help()
+        .argv;
 
-// Run the script if called directly
+    // Prompt for URL if not provided
+    let url = argv.url;
+    if (!url) {
+        console.log(chalk.blue('Welcome to GitBook to PDF Converter!'));
+        console.log('Please enter the root URL of your Gitbook (e.g., https://your-gitbook.io/)');
+
+        url = await new Promise<string>(resolve => {
+            process.stdout.write('> ');
+            process.stdin.once('data', (data: Buffer) => {
+                resolve(data.toString().trim());
+            });
+        });
+    }
+
+    // Validate URL
+    try {
+        new URL(url);
+    } catch (error) {
+        console.error(chalk.red('Invalid URL format. Please provide a valid URL.'));
+        process.exit(1);
+    }
+
+    return {
+        url,
+        outputDir: argv.output,
+        concurrency: argv.concurrency,
+        retries: argv.retries,
+        delay: argv.delay,
+        hideElements: argv.hideElements,
+        format: argv.format as 'A4' | 'A3' | 'Letter',
+        quality: argv.quality as 'low' | 'medium' | 'high',
+        resume: argv.resume,
+        includePatterns: argv.include as string[],
+        excludePatterns: argv.exclude as string[],
+        timeout: argv.timeout,
+    };
+}
+
+// Main execution
+async function main(): Promise<void> {
+    try {
+        const config = await setupCLI();
+        const converter = new GitBookToPDFConverter(config);
+        await converter.process();
+    } catch (error: any) {
+        console.error(chalk.red(`Application error: ${error.message}`));
+        process.exit(1);
+    }
+}
+
+// Run if called directly
 if (import.meta.main) {
-    run().catch(console.error);
+    main().catch(console.error);
 }
+
+export { GitBookToPDFConverter, main };

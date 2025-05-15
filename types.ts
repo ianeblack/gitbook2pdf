@@ -1,4 +1,19 @@
-// Interface for sitemap URL entry
+// Types
+export interface Config {
+    url: string;
+    outputDir: string;
+    concurrency: number;
+    retries: number;
+    delay: number;
+    hideElements: boolean;
+    format: 'A4' | 'A3' | 'Letter';
+    quality: 'low' | 'medium' | 'high';
+    resume: boolean;
+    includePatterns: string[];
+    excludePatterns: string[];
+    timeout: number;
+}
+
 export interface SitemapUrl {
     loc: string | string[];
     lastmod?: string;
@@ -6,39 +21,29 @@ export interface SitemapUrl {
     priority?: string;
 }
 
-// Interface for sitemap structure
-interface SitemapUrlSet {
-    urlset: {
+export interface ParsedSitemap {
+    urlset?: {
         url: SitemapUrl | SitemapUrl[];
     };
-}
-
-// Interface for sitemap index
-interface SitemapIndex {
-    sitemapindex: {
-        sitemap: SitemapIndexEntry | SitemapIndexEntry[];
+    sitemapindex?: {
+        sitemap: { loc: string } | { loc: string }[];
     };
 }
 
-interface SitemapIndexEntry {
-    loc: string;
-    lastmod?: string;
-}
-
-// Union type for parsed sitemap
-export type ParsedSitemap = SitemapUrlSet | SitemapIndex;
-
-// Interface for page content check
-export interface PageContentCheck {
-    hasText: boolean;
-    textLength: number;
-    hasElements: boolean;
+export interface ProcessingResult {
     url: string;
-    title: string;
+    success: boolean;
+    error?: string;
+    outputPath?: string;
+    size?: number;
+    duration?: number;
 }
 
-// Interface for PDF options
-export interface PdfCaptureOptions {
-    hideElements?: boolean;
-    debug?: boolean;
+export interface ProcessingStats {
+    total: number;
+    successful: number;
+    failed: number;
+    skipped: number;
+    totalSize: number;
+    totalDuration: number;
 }

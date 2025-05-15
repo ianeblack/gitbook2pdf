@@ -3,7 +3,7 @@
 ![gitbook2pdf gradient image](./img.png)
 
 [![Made with Bun](https://img.shields.io/badge/Made%20with-Bun-orange?style=flat-square&logo=bun)](https://bun.sh)
-[![TypeScript](https://img.shields.io/badge/TypeScript?style=flat-square&logo=typescript)](https://www.typescriptlang.org/)
+![ts](https://flat.badgen.net/badge/Built%20With/TypeScript/blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg?style=flat-square)](https://opensource.org/licenses/MIT)
 
 

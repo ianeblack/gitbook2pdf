@@ -1,3 +1,4 @@
+![gitbook2pdf gradient image](./img.png)
 # 📚➡️📄 gb2pdf
 
 > Convert GitBook documentation to PDF with a single command! 🚀

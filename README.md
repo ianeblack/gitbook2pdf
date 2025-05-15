@@ -1,6 +1,6 @@
-# gb2pdf
+# gitbook2pdf
 
-`gb2pdf` is a project designed to convert GB (possibly referring to a specific file format or data type) to PDF format. This project leverages several libraries to handle XML parsing, HTTP requests, and PDF generation.
+`gitbook2pdf` is a project designed to convert a gitbook page to a PDF. This project leverages several libraries to handle XML parsing, HTTP requests, and PDF generation.
 
 ## Prerequisites
 
@@ -11,7 +11,7 @@
 
 To install the necessary dependencies, run:
 
-```bash
+```zsh
 bun install
 ```
 
@@ -21,7 +21,7 @@ This will install all required packages as specified in the `package.json` file.
 
 To run the project, execute:
 
-```bash
+```zsh
 bun run index.ts
 ```
 

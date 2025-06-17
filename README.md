@@ -7,7 +7,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 
-# 📚➡️📄 gb2pdf
+# 📚➡️📄 gitbook2pdf 
 
 > High-performance GitBook to PDF converter with parallel processing, resume capability, merge option, and smart filtering! ⚡
 ## ⚡ Quick Start
@@ -263,22 +263,6 @@ For troubleshooting, failed pages generate error screenshots:
 pdfs/category/001_page_error.png
 ```
 
-## 🤝 Contributing
-
-We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for details.
-
-### Development
-
-```bash
-# Clone and setup
-git clone https://github.com/yourusername/gb2pdf
-cd gb2pdf
-bun install
-
-# Run with development features
-bun run index.ts --help
-```
-
 ## 📊 Statistics
 
 After conversion, gb2pdf shows detailed statistics:
@@ -312,7 +296,5 @@ MIT License © 2025 Ian Irizarry
 </div>
 
 <div align="center">
-  <a href="https://github.com/yourusername/gb2pdf/issues">Report Bug</a> • 
-  <a href="https://github.com/yourusername/gb2pdf/issues">Request Feature</a> • 
-  <a href="https://github.com/yourusername/gb2pdf/discussions">Discussions</a>
+  <a href="https://github.com/tsoodo/gitbook2pdf/issues">Report Bug</a> • 
 </div>
